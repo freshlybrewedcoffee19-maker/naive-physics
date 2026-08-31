@@ -7,6 +7,7 @@ const episodes = [
   {
     experiment: "EXP 001",
     id: "IRON_001",
+    videoPath: "/dataset/episodes/IRON_001_action.mp4",
     region: "front_body",
     duration: "91 s",
     metadata: [
@@ -21,6 +22,7 @@ const episodes = [
   {
     experiment: "EXP 002",
     id: "IRON_002",
+    videoPath: "/dataset/episodes/IRON_002_action.mp4",
     region: "both_sleeves",
     duration: "93 s",
     metadata: [
@@ -35,6 +37,7 @@ const episodes = [
   {
     experiment: "EXP 003",
     id: "IRON_003",
+    videoPath: "/dataset/episodes/IRON_003_action.mp4",
     region: "back_body",
     duration: "73 s",
     metadata: [
@@ -60,31 +63,25 @@ export function DatasetExplorer() {
   const [currentTime, setCurrentTime] = useState(0);
   const selected = episodes.find((episode) => episode.id === selectedId) ?? episodes[0];
   const readField = (field: string) => selected.metadata.find(([key]) => key === field)?.[1] ?? null;
-  const currentFrame = Math.round(currentTime * 24);
+  const frameRate = Number(readField("frame_rate_fps"));
+  const currentFrame = Math.round(currentTime * frameRate);
+  const updateCurrentTime = (video: HTMLVideoElement) => setCurrentTime(video.currentTime);
 
   return (
     <div className={styles.explorerShell}>
-      {selected.id === "IRON_001" ? (
-        <div className={styles.connectedVideo}>
-          <video controls key={selected.id} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} preload="metadata">
-            <source src="/dataset/episodes/IRON_001_action.mp4" type="video/mp4" />
-            Your browser does not support HTML5 video.
-          </video>
-          <div className={styles.videoInspection}>
-            <div><span>EXPERIMENT 001</span><strong>IRON_001</strong></div>
-            <div><span>Front body</span><strong>91 sec</strong></div>
-            <div><span>RGB · 24 fps</span><strong>848 × 478</strong></div>
-            <div className={styles.timeReadout}><span>Current time: {currentTime.toFixed(1)} sec</span><strong>Current frame: {currentFrame}</strong></div>
-          </div>
+      <div className={styles.connectedVideo}>
+        <video controls key={selected.id} onLoadedMetadata={() => setCurrentTime(0)} onSeeked={(event) => updateCurrentTime(event.currentTarget)} onTimeUpdate={(event) => updateCurrentTime(event.currentTarget)} preload="metadata">
+          <source src={selected.videoPath} type="video/mp4" />
+          Your browser does not support HTML5 video.
+        </video>
+        <div className={styles.videoInspection} aria-label="Live video inspection data">
+          <div><span>Current time</span><strong>{currentTime.toFixed(1)} s</strong></div>
+          <div className={styles.timeReadout}><span>Current frame</span><strong>{String(currentFrame).padStart(4, "0")}</strong></div>
+          <div><span>FPS</span><strong>{readField("frame_rate_fps")}</strong></div>
+          <div><span>Episode</span><strong>{selected.id}</strong></div>
+          <div><span>Region</span><strong>{readField("garment_region")}</strong></div>
         </div>
-      ) : (
-        <div className={styles.videoPlaceholder}>
-          <div className={styles.frameCorners} aria-hidden="true"><span /><span /><span /><span /></div>
-          <div className={styles.previewTop}><span>CAPTURE / {selected.id.slice(-3)}</span><span>RGB / 24 FPS</span></div>
-          <p>Video preview</p><strong>Video connection pending</strong><span>Only IRON_001 is connected in this step.</span>
-          <div className={styles.previewBottom}><span>TOP-DOWN / FIXED</span><span>GRID / 10 CM</span></div>
-        </div>
-      )}
+      </div>
       <div className={styles.episodeSelector} role="group" aria-label="Select an episode">
         {episodes.map((episode) => {
           const isSelected = episode.id === selectedId;
