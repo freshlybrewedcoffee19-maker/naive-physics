@@ -1,0 +1,5 @@
+data/raw/
+.agents/
+web/public/dataset/episodes/
+web/AGENTS.md
+web/CLAUDE.md

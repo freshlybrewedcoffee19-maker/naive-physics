@@ -1,0 +1,4 @@
+episode_id,video_file,garment_type,garment_region,task,action,material,camera_view,camera_motion,operator_entry_side,grid_spacing_cm,duration_seconds,frame_width_px,frame_height_px,frame_rate_fps,total_bitrate_kbps,outcome
+IRON_001,IRON_001_action.mp4,t_shirt,front_body,wrinkle_removal,ironing,cotton,top_down,fixed,left,10,91,848,478,24,1263,
+IRON_002,IRON_002_action.mp4,t_shirt,both_sleeves,wrinkle_removal,ironing,cotton,top_down,fixed,left,10,93,848,478,24,1264,
+IRON_003,IRON_003_action.mp4,t_shirt,back_body,wrinkle_removal,ironing,cotton,top_down,fixed,left,10,73,848,478,24,1517,
