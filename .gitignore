@@ -1,5 +1,6 @@
 data/raw/
 .agents/
-web/public/dataset/episodes/
+web/public/dataset/episodes/*
+!web/public/dataset/episodes/IRON_001_action.mp4
 web/AGENTS.md
 web/CLAUDE.md
