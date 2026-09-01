@@ -1,9 +1,10 @@
 import Link from "next/link";
 
-type SiteHeaderProps = { active?: "datasets" | "categories" | "collection" | "format" | "pricing" | "about" };
+type SiteHeaderProps = { active?: "datasets" | "annotate" | "categories" | "collection" | "format" | "pricing" | "about" };
 
 const navItems = [
   { label: "Datasets", href: "/dataset", key: "datasets" },
+  { label: "Free Annotation Tool", href: "/annotate", key: "annotate", featured: true },
   { label: "Categories", href: "/#categories", key: "categories" },
   { label: "How we collect", href: "/#collection", key: "collection" },
   { label: "Data format", href: "/#data-format", key: "format" },
@@ -13,7 +14,7 @@ const navItems = [
 
 function NavLinks({ active }: SiteHeaderProps) {
   return <>{navItems.map((item) => (
-    <Link aria-current={item.key === active ? "page" : undefined} className={item.key === active ? "navActive" : undefined} href={item.href} key={item.label}>{item.label}</Link>
+    <Link aria-current={item.key === active ? "page" : undefined} className={`${"featured" in item && item.featured ? "navFeatured" : ""} ${item.key === active ? "navActive" : ""}`.trim()} href={item.href} key={item.label}>{item.label}</Link>
   ))}</>;
 }
 

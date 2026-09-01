@@ -3,8 +3,8 @@ import { TemporalWorkbench } from "./temporal-workbench";
 import styles from "./annotate.module.css";
 
 export const metadata: Metadata = {
-  title: "Temporal Annotation v0.2 — nAIve physics Data Workbench",
-  description: "Internal human temporal annotation workbench for IRON_001.",
+  title: "Free Annotation Tool — nAIve physics",
+  description: "Turn manipulation videos into structured, human-verified temporal training data.",
 };
 
 export default function AnnotatePage() {
