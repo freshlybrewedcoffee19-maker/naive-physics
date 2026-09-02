@@ -25,7 +25,7 @@ export function DatasetExplorer() {
   return (
     <div className={styles.explorerShell}>
       <div className={styles.connectedVideo}>
-        <video controls key={selected.id} onLoadedMetadata={() => setCurrentTime(0)} onSeeked={(event) => updateCurrentTime(event.currentTarget)} onTimeUpdate={(event) => updateCurrentTime(event.currentTarget)} preload="metadata">
+        <video className={selected.id === "IRON_001" ? styles.portraitVideo : undefined} controls key={selected.id} onLoadedMetadata={() => setCurrentTime(0)} onSeeked={(event) => updateCurrentTime(event.currentTarget)} onTimeUpdate={(event) => updateCurrentTime(event.currentTarget)} preload="metadata">
           <source src={selected.videoPath} type="video/mp4" />
           Your browser does not support HTML5 video.
         </video>

@@ -1,6 +1,6 @@
 export const IRONING_EPISODES = [
   {
-    experiment: "EXP 001", id: "IRON_001", videoPath: "/dataset/episodes/IRON_001_action.mp4", region: "front_body", duration: "91 s",
+    experiment: "EXP 001", id: "IRON_001", videoPath: "/dataset/episodes/IRON_001_action_web.mp4", region: "front_body", duration: "91 s",
     metadata: [
       ["episode_id", "IRON_001"], ["video_file", "IRON_001_action.mp4"], ["garment_type", "t_shirt"], ["garment_region", "front_body"],
       ["task", "wrinkle_removal"], ["action", "ironing"], ["material", "cotton"], ["camera_view", "top_down"], ["camera_motion", "fixed"],
