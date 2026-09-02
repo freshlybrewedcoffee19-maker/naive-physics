@@ -1,29 +1,24 @@
 import Link from "next/link";
+import styles from "./site-header.module.css";
 
-type SiteHeaderProps = { active?: "datasets" | "annotate" | "categories" | "collection" | "format" | "pricing" | "about" };
+type SiteHeaderProps = { active?: "datasets" | "annotate" };
+const HUGGING_FACE_URL = "https://huggingface.co/datasets/CaramelCoffee19/naive-physics-ironing-v0.2";
 
 const navItems = [
-  { label: "Datasets", href: "/dataset", key: "datasets" },
-  { label: "Free Annotation Tool", href: "/annotate", key: "annotate", featured: true },
-  { label: "Categories", href: "/#categories", key: "categories" },
-  { label: "How we collect", href: "/#collection", key: "collection" },
+  { label: "Datasets", href: "/#datasets", key: "datasets" },
   { label: "Data format", href: "/#data-format", key: "format" },
-  { label: "Pricing", href: "/#pricing", key: "pricing" },
-  { label: "About", href: "/#about", key: "about" },
+  { label: "Free tool", href: "/annotate", key: "annotate" },
+  { label: "Dataset requests", href: "/#dataset-requests", key: "requests" },
 ] as const;
 
 function NavLinks({ active }: SiteHeaderProps) {
-  return <>{navItems.map((item) => (
-    <Link aria-current={item.key === active ? "page" : undefined} className={`${"featured" in item && item.featured ? "navFeatured" : ""} ${item.key === active ? "navActive" : ""}`.trim()} href={item.href} key={item.label}>{item.label}</Link>
-  ))}</>;
+  return <>{navItems.map((item) => <Link aria-current={item.key === active ? "page" : undefined} className={item.key === active ? styles.active : undefined} href={item.href} key={item.label}>{item.label}</Link>)}<a href={HUGGING_FACE_URL} target="_blank" rel="noreferrer">Hugging Face <span aria-hidden="true">↗</span></a></>;
 }
 
 export function SiteHeader({ active }: SiteHeaderProps) {
-  return (
-    <header className="siteHeader">
-      <Link className="wordmark" href="/" aria-label="nAIve physics home"><span className="wordmarkMark" aria-hidden="true">nP</span><span>nAIve physics</span></Link>
-      <nav className="desktopNav" aria-label="Primary navigation"><NavLinks active={active} /><Link className="requestLink" href="/#request-data">Request data <span aria-hidden="true">→</span></Link></nav>
-      <details className="mobileNav"><summary aria-label="Open navigation">Menu</summary><nav aria-label="Mobile navigation"><NavLinks active={active} /><Link className="requestLink" href="/#request-data">Request data →</Link></nav></details>
-    </header>
-  );
+  return <header className={styles.header}>
+    <Link className={styles.wordmark} href="/" aria-label="nAIve physics home">nAIve physics</Link>
+    <nav className={styles.desktopNav} aria-label="Primary navigation"><NavLinks active={active} /></nav>
+    <details className={styles.mobileNav}><summary>Menu</summary><nav aria-label="Mobile navigation"><NavLinks active={active} /></nav></details>
+  </header>;
 }
