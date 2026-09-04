@@ -96,6 +96,36 @@ const proposeGarmentPoints = (mask: MaskState, dimensions: { width: number; heig
 };
 const formatStatus = (status: Status) => status.replaceAll("_", " ");
 const roundTime = (value: number) => Math.round(value * 1000) / 1000;
+const GARMENT_LANDMARKS = new Set<PointLabel>(["left_shoulder","right_shoulder","left_sleeve_tip","right_sleeve_tip","left_hem","right_hem","garment_center"]);
+type TimedTrack = { timestamp_sec: number; tracking_status: "seed" | "tracked" | "review_required" };
+type TrackInterval<T> = { before: T; after: T; ratio: number };
+const validTrackInterval = <T extends TimedTrack>(records: T[], time: number): TrackInterval<T> | null => {
+  const sorted = records.toSorted((a,b)=>a.timestamp_sec-b.timestamp_sec);
+  for (let index=0;index<sorted.length-1;index+=1) {
+    const before=sorted[index], after=sorted[index+1];
+    if (time<before.timestamp_sec||time>after.timestamp_sec) continue;
+    if (before.tracking_status==="review_required"||after.tracking_status==="review_required") return null;
+    const span=after.timestamp_sec-before.timestamp_sec;
+    return { before,after,ratio:span>0?(time-before.timestamp_sec)/span:0 };
+  }
+  return null;
+};
+const validCoverage = <T extends TimedTrack>(records: T[]) => {
+  const sorted=records.toSorted((a,b)=>a.timestamp_sec-b.timestamp_sec); let seconds=0;
+  const intervals:Array<{start:number;end:number}>=[];
+  for (let index=0;index<sorted.length-1;index+=1) {
+    const before=sorted[index],after=sorted[index+1];
+    if (before.tracking_status==="review_required"||after.tracking_status==="review_required"||after.timestamp_sec<=before.timestamp_sec) continue;
+    intervals.push({start:before.timestamp_sec,end:after.timestamp_sec}); seconds+=after.timestamp_sec-before.timestamp_sec;
+  }
+  return {seconds,intervals};
+};
+const hiddenIntervals = (coverage:Array<{start:number;end:number}>,episodeDuration:number) => {
+  const hidden:Array<{start:number;end:number}>=[]; let cursor=0;
+  for (const interval of coverage) { if (interval.start>cursor) hidden.push({start:cursor,end:interval.start}); cursor=Math.max(cursor,interval.end); }
+  if (cursor<episodeDuration) hidden.push({start:cursor,end:episodeDuration});
+  return hidden;
+};
 
 export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, dimensions, activeRegion, temporal, onAcceptTemporal }: { videoRef: RefObject<HTMLVideoElement | null>; episodeId: string; fps: number | null; currentTime: number; duration: number; dimensions: { width: number; height: number }; activeRegion: string; temporal: TemporalRecord[]; onAcceptTemporal: (candidate: { label: TemporalLabel; start_time_sec: number; end_time_sec: number }) => boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -321,12 +351,74 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
   };
   const exportVideo = async () => {
     const video = videoRef.current; if (!video || !dimensions.width || !dimensions.height || typeof MediaRecorder === "undefined") { setNotice("Analysis video export is unavailable in this browser."); return; }
+    const exportContext=interactionContextRef.current;
+    if (exportContext.revision!==interactionContext.revision) { setExportValidation("Analysis video export blocked: the visible analysis state is stale."); return; }
+    if (exportContext.contextLevel==="FULL"&&(!exportContext.maskTracks.length||!exportContext.toolTracks.length)) { setExportValidation("Analysis video export blocked: FULL interaction context does not match the tracking records."); return; }
+    if (temporalCandidates.length&&temporalContextRevision!==exportContext.revision) { setExportValidation("Analysis video export blocked: temporal candidates were generated from an older interaction-context snapshot."); return; }
+    setExportValidation("");
+    const semanticSnapshot=semantics.map((item)=>({...item})), temporalSnapshot=temporal.map((item)=>({...item})), slipSnapshot=slips.map((item)=>({...item}));
+    const maskSeed:MaskTrack|null=exportContext.mask?{frame_index:Math.round(exportContext.mask.seedTime*(fps??0)),timestamp_sec:exportContext.mask.seedTime,offset_x_px:0,offset_y_px:0,source_type:exportContext.mask.source_type==="human_verified"?"model_estimated":exportContext.mask.source_type,tracking_status:"seed"}:null;
+    const maskRecords=[...(maskSeed?[maskSeed]:[]),...exportContext.maskTracks];
+    const toolRecords=[...(exportContext.toolSeed?[exportContext.toolSeed]:[]),...exportContext.toolTracks];
+    const maskCoverage=validCoverage(maskRecords), ironCoverage=validCoverage(toolRecords);
+    const maskHidden=hiddenIntervals(maskCoverage.intervals,duration), ironHidden=hiddenIntervals(ironCoverage.intervals,duration);
+    const sourceFps=fps??24, frameTolerance=.5/sourceFps;
     setVideoExporting(true); const originalTime = video.currentTime, wasPaused = video.paused;
     const canvas = document.createElement("canvas"); canvas.width = dimensions.width; canvas.height = dimensions.height; const context = canvas.getContext("2d"); if (!context) return;
-    const stream = canvas.captureStream(Math.min(24, fps ?? 24)); const recorder = new MediaRecorder(stream, { mimeType: "video/webm" }); const chunks: BlobPart[] = [];
+    const stream = canvas.captureStream(Math.min(24, sourceFps)); const recorder = new MediaRecorder(stream, { mimeType: "video/webm" }); const chunks: BlobPart[] = []; let invalidated=false,renderedFrames=0,lastFrame=-1;
     recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
-    recorder.onstop = async () => { downloadBlob(`${episodeId}_analysis.webm`, new Blob(chunks, { type: "video/webm" })); try { await waitForSeek(video, originalTime); if (!wasPaused) await video.play(); } catch {} setVideoExporting(false); };
-    const draw = () => { if (recorder.state === "inactive" || !context) return; context.drawImage(video, 0, 0, dimensions.width, dimensions.height); const frame = Math.round(video.currentTime * (fps ?? 0)); context.fillStyle = "rgba(0,0,0,.72)"; context.fillRect(0, 0, dimensions.width, 36); context.fillStyle = "white"; context.font = "16px monospace"; const active = temporal.find((item) => video.currentTime >= item.start_time_sec && video.currentTime <= item.end_time_sec); context.fillText(`${episodeId}  ${video.currentTime.toFixed(3)} sec  frame ${frame}  ${active?.label ?? "—"}`, 12, 24); for (const item of semantics.filter((record) => record.x_px !== null && Math.abs(record.frame_index - frame) <= 1)) { context.strokeStyle = item.source_type === "human_verified" ? "#d42b20" : "#ffd84d"; context.beginPath(); context.arc(item.x_px!, item.y_px!, 8, 0, Math.PI * 2); context.stroke(); context.fillStyle = context.strokeStyle; context.fillText(item.semantic_label, item.x_px! + 12, item.y_px! - 8); } requestAnimationFrame(draw); };
+    recorder.onstop = async () => {
+      if (!invalidated) {
+        downloadBlob(`${episodeId}_analysis.webm`,new Blob(chunks,{type:"video/webm"}));
+        const percent=(seconds:number)=>duration?seconds/duration*100:0;
+        const formatHidden=(items:Array<{start:number;end:number}>)=>items.length?items.map((item)=>`${item.start.toFixed(3)}–${item.end.toFixed(3)} sec`).join(", "):"none";
+        setNotice(`Analysis video exported: ${renderedFrames} source frames rendered. Semantic tracking ${maskCoverage.seconds.toFixed(3)} sec (${percent(maskCoverage.seconds).toFixed(1)}%); iron tracking ${ironCoverage.seconds.toFixed(3)} sec (${percent(ironCoverage.seconds).toFixed(1)}%). Hidden semantic intervals: ${formatHidden(maskHidden)}. Hidden iron intervals: ${formatHidden(ironHidden)}.`);
+      }
+      try { await waitForSeek(video, originalTime); if (!wasPaused) await video.play(); } catch {} setVideoExporting(false);
+    };
+    const drawPoint=(x:number,y:number,label:string,source:SourceType) => {
+      const color=source==="human_verified"?"#ff4a3d":source==="model_estimated"?"#ffd84d":"#62d9ff";
+      context.strokeStyle=color;context.fillStyle=color;context.lineWidth=2;context.beginPath();context.arc(x,y,7,0,Math.PI*2);context.stroke();context.fillText(label,x+11,y-7);
+    };
+    const draw = () => {
+      if (recorder.state === "inactive" || !context) return;
+      if (interactionContextRef.current.revision!==exportContext.revision) { invalidated=true;setExportValidation("Analysis video export stopped: analysis state changed during rendering.");recorder.stop();return; }
+      const time=video.currentTime,frame=Math.round(time*sourceFps);
+      if (frame!==lastFrame) {
+        lastFrame=frame;renderedFrames+=1;context.drawImage(video,0,0,dimensions.width,dimensions.height);
+        context.font=`${Math.max(12,Math.round(dimensions.width*.016))}px monospace`;context.lineWidth=2;
+        const maskInterval=validTrackInterval(maskRecords,time);
+        for (const label of GARMENT_LANDMARKS) {
+          const observations=semanticSnapshot.filter((item)=>item.semantic_label===label&&item.x_px!==null&&item.y_px!==null).toSorted((a,b)=>a.timestamp_sec-b.timestamp_sec);
+          const exact=observations.find((item)=>Math.abs(item.timestamp_sec-time)<=frameTolerance);
+          if (exact) { drawPoint(exact.x_px!,exact.y_px!,label,exact.source_type);continue; }
+          if (!maskInterval||!observations.length) continue;
+          const base=observations.reduce((best,item)=>Math.abs(item.timestamp_sec-time)<Math.abs(best.timestamp_sec-time)?item:best);
+          const baseMask=validTrackInterval(maskRecords,base.timestamp_sec);
+          if (!baseMask) continue;
+          const interpolateOffset=(interval:TrackInterval<MaskTrack>)=>({x:interval.before.offset_x_px+(interval.after.offset_x_px-interval.before.offset_x_px)*interval.ratio,y:interval.before.offset_y_px+(interval.after.offset_y_px-interval.before.offset_y_px)*interval.ratio});
+          const nowOffset=interpolateOffset(maskInterval),baseOffset=interpolateOffset(baseMask);
+          drawPoint(base.x_px!+nowOffset.x-baseOffset.x,base.y_px!+nowOffset.y-baseOffset.y,label,"auto_tracked");
+        }
+        const toolInterval=validTrackInterval(toolRecords,time);
+        if (toolInterval) {
+          const mix=(a:number,b:number)=>a+(b-a)*toolInterval.ratio,x=mix(toolInterval.before.x_px,toolInterval.after.x_px),y=mix(toolInterval.before.y_px,toolInterval.after.y_px),width=mix(toolInterval.before.width_px,toolInterval.after.width_px),height=mix(toolInterval.before.height_px,toolInterval.after.height_px),centerX=mix(toolInterval.before.center_x_px,toolInterval.after.center_x_px),centerY=mix(toolInterval.before.center_y_px,toolInterval.after.center_y_px);
+          const source:SourceType=toolInterval.ratio===0&&toolInterval.before.source_type==="human_verified"?"human_verified":"auto_tracked";const color=source==="human_verified"?"#ff4a3d":"#62d9ff";
+          context.strokeStyle=color;context.fillStyle=color;context.strokeRect(x,y,width,height);context.beginPath();context.moveTo(centerX-6,centerY);context.lineTo(centerX+6,centerY);context.moveTo(centerX,centerY-6);context.lineTo(centerX,centerY+6);context.stroke();context.fillText("IRON",x,y-7);
+          const contactTimes=new Set(exportContext.toolOnGarmentTimes.map((value)=>value.toFixed(3)));
+          if (contactTimes.has(toolInterval.before.timestamp_sec.toFixed(3))&&contactTimes.has(toolInterval.after.timestamp_sec.toFixed(3))) drawPoint(centerX,centerY,"iron_contact_point","auto_tracked");
+        }
+        for (const item of semanticSnapshot.filter((record)=>["anchor_point","iron_contact_point"].includes(record.semantic_label)&&record.x_px!==null&&Math.abs(record.timestamp_sec-time)<=frameTolerance)) drawPoint(item.x_px!,item.y_px!,item.semantic_label,item.source_type);
+        const acceptedSlip=slipSnapshot.find((item)=>item.review_status==="accepted"&&time>=item.start_time_sec&&time<=item.end_time_sec), candidateSlip=slipSnapshot.find((item)=>item.review_status==="candidate"&&time>=item.start_time_sec&&time<=item.end_time_sec);
+        const activeTemporal=temporalSnapshot.filter((item)=>time>=item.start_time_sec&&time<=item.end_time_sec).map((item)=>item.label).join(" + ")||"—";
+        const region=semanticSnapshot.find((item)=>item.semantic_type==="region")?.semantic_label||activeRegion||"—";
+        context.fillStyle="rgba(0,0,0,.78)";context.fillRect(0,0,dimensions.width,Math.max(52,dimensions.height*.11));context.fillStyle="white";
+        context.fillText(`${episodeId}  ${time.toFixed(3)} sec  frame ${frame}`,12,20);context.fillText(`TEMPORAL ${activeTemporal}  REGION ${region}`,12,42);
+        if (acceptedSlip) {context.fillStyle="#ff4a3d";context.fillText("VERIFIED SLIP",dimensions.width-150,20);} else if (candidateSlip) {context.fillStyle="#ffd84d";context.fillText("UNREVIEWED slip_candidate",dimensions.width-250,20);}
+        const legendY=dimensions.height-12;context.fillStyle="rgba(0,0,0,.72)";context.fillRect(0,dimensions.height-34,dimensions.width,34);context.fillStyle="#ff4a3d";context.fillText("● HUMAN VERIFIED",12,legendY);context.fillStyle="#ffd84d";context.fillText("● MODEL ESTIMATE",170,legendY);context.fillStyle="#62d9ff";context.fillText("● AUTO TRACK",330,legendY);
+      }
+      requestAnimationFrame(draw);
+    };
     video.addEventListener("ended", () => recorder.stop(), { once: true }); recorder.start(1000); await waitForSeek(video, 0); await video.play(); draw(); setNotice("Rendering a real-time browser derivative. The source MP4 is never modified.");
   };
 
