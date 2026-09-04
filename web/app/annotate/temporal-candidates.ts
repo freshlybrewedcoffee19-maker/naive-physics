@@ -20,7 +20,8 @@ type HandSample = { timestamp_sec: number; hand_index: number; center_x_px: numb
 type ToolSample = { timestamp_sec: number; center_x_px: number; center_y_px: number; tracking_status: string };
 type SlipSample = { start_time_sec: number; end_time_sec: number; candidate_score: number; evidence: string };
 type RgbSample = { time: number; score: number };
-type CandidateInputs = { episodeId: string; duration: number; fps: number; hands: HandSample[]; tools: ToolSample[]; toolOnGarmentTimes: number[]; slips: SlipSample[]; rgb: RgbSample[]; garmentMaskAvailable: boolean };
+type CandidateInputs = { episodeId: string; duration: number; fps: number; hands: HandSample[]; tools: ToolSample[]; toolOnGarmentTimes: number[]; garmentTrackTimes: number[]; slips: SlipSample[]; rgb: RgbSample[]; garmentMaskAvailable: boolean };
+export type TemporalCoverage = { humanCoverageSeconds: number; humanCoveragePercent: number; interactionCoverageSeconds: number; interactionCoveragePercent: number; episodeStateCoverageSeconds: number; episodeStateCoveragePercent: number; unclassifiedHumanSeconds: number; humanGaps: Array<{ start: number; end: number }> };
 
 const round = (value: number) => Math.round(value * 1000) / 1000;
 const distance = (a: { center_x_px: number; center_y_px: number }, b: { center_x_px: number; center_y_px: number }) => Math.hypot(b.center_x_px - a.center_x_px, b.center_y_px - a.center_y_px);
@@ -53,6 +54,30 @@ export function enforceEpisodeStateBoundaries(candidates: TemporalCandidate[], f
   });
 }
 
+const unionIntervals = (intervals: Array<{ start: number; end: number }>) => {
+  const sorted = intervals.filter((item) => item.end > item.start).sort((a,b) => a.start-b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const interval of sorted) {
+    const previous = merged.at(-1);
+    if (previous && interval.start <= previous.end) previous.end = Math.max(previous.end, interval.end);
+    else merged.push({ ...interval });
+  }
+  return merged;
+};
+
+export function summarizeTemporalCoverage(candidates: TemporalCandidate[], duration: number): TemporalCoverage {
+  const usable = candidates.filter((item) => item.review_status !== "rejected");
+  const intervalsFor = (track: TemporalTrack) => unionIntervals(usable.filter((item) => item.track === track).map((item) => ({ start:item.start_time_sec,end:item.end_time_sec })));
+  const human = intervalsFor("HUMAN BEHAVIOUR"), interaction = intervalsFor("INTERACTION"), episodeState = intervalsFor("EPISODE STATE");
+  const total = (items: Array<{ start: number; end: number }>) => items.reduce((sum,item)=>sum+item.end-item.start,0);
+  const humanGaps: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const interval of human) { if (interval.start > cursor) humanGaps.push({ start:round(cursor),end:round(interval.start) }); cursor=Math.max(cursor,interval.end); }
+  if (cursor < duration) humanGaps.push({ start:round(cursor),end:round(duration) });
+  const humanCoverageSeconds=round(total(human)), interactionCoverageSeconds=round(total(interaction)), episodeStateCoverageSeconds=round(total(episodeState));
+  return { humanCoverageSeconds,humanCoveragePercent:duration?round(humanCoverageSeconds/duration*100):0,interactionCoverageSeconds,interactionCoveragePercent:duration?round(interactionCoverageSeconds/duration*100):0,episodeStateCoverageSeconds,episodeStateCoveragePercent:duration?round(episodeStateCoverageSeconds/duration*100):0,unclassifiedHumanSeconds:round(Math.max(0,duration-humanCoverageSeconds)),humanGaps };
+}
+
 export function generateTemporalCandidates(input: CandidateInputs): TemporalCandidate[] {
   const proposed: Omit<TemporalCandidate, "candidate_id">[] = [];
   const add = (label: CandidateLabel, start: number, end: number, score: number | null, evidence: string, source_type: "model_estimated" | "auto_tracked" = "auto_tracked") => {
@@ -63,6 +88,7 @@ export function generateTemporalCandidates(input: CandidateInputs): TemporalCand
   const handTimes = [...new Set(input.hands.map((item) => item.timestamp_sec))].sort((a,b) => a-b);
   const tools = [...input.tools].filter((item) => item.tracking_status !== "review_required").sort((a,b) => a.timestamp_sec-b.timestamp_sec);
   const toolOnGarment = new Set(input.toolOnGarmentTimes.map((time)=>time.toFixed(3)));
+  const garmentTracked = new Set(input.garmentTrackTimes.map((time)=>time.toFixed(3)));
   const activityTimes = [...handTimes, ...tools.map((item) => item.timestamp_sec)].sort((a,b) => a-b);
   const firstActivity = activityTimes[0]; const lastActivity = activityTimes.at(-1);
   const lowMotion = input.rgb.length ? input.rgb.filter((item) => item.score < .03).length / input.rgb.length : 0;
@@ -74,9 +100,13 @@ export function generateTemporalCandidates(input: CandidateInputs): TemporalCand
     const previous=tools[index-1], current=tools[index], displacement=distance(previous,current), elapsed=current.timestamp_sec-previous.timestamp_sec;
     if (elapsed<=0) continue;
     const overlapsGarment=toolOnGarment.has(previous.timestamp_sec.toFixed(3))&&toolOnGarment.has(current.timestamp_sec.toFixed(3));
-    if (overlapsGarment && elapsed<=3 && displacement>=18) add("iron_stroke", previous.timestamp_sec,current.timestamp_sec,Math.min(.94,.58+displacement/300),`tool_on_garment=true; tool_displacement=${displacement.toFixed(1)} px; duration=${elapsed.toFixed(3)} sec; continuous sampled track.`,"auto_tracked");
-    else if (overlapsGarment && elapsed>=.5 && elapsed<=3 && displacement<=8) add("iron_hold",previous.timestamp_sec,current.timestamp_sec,.62,`tool_on_garment=true; tool_displacement=${displacement.toFixed(1)} px; duration=${elapsed.toFixed(3)} sec; stationary visible overlap candidate.`,"auto_tracked");
-    else if (displacement>=35) add("reposition",previous.timestamp_sec,current.timestamp_sec,.52,`active stroke not established; tracked tool location changed ${displacement.toFixed(1)} px across ${elapsed.toFixed(3)} sec.`,"auto_tracked");
+    const garmentContext=garmentTracked.has(previous.timestamp_sec.toFixed(3))&&garmentTracked.has(current.timestamp_sec.toFixed(3));
+    const speed=displacement/elapsed;
+    const nearbyRgb=input.rgb.filter((sample)=>sample.time>=previous.timestamp_sec&&sample.time<=current.timestamp_sec);
+    const meanRgb=nearbyRgb.length?nearbyRgb.reduce((sum,sample)=>sum+sample.score,0)/nearbyRgb.length:0;
+    if (garmentContext && overlapsGarment && speed>=.2) add("iron_stroke",previous.timestamp_sec,current.timestamp_sec,Math.min(.94,.58+speed/10),`continuous interpolation between tracked iron observations; tool_on_garment=true; garment_track=true; tool_speed=${speed.toFixed(2)} px/sec; mean RGB response=${meanRgb.toFixed(4)}.`,"auto_tracked");
+    else if (garmentContext && overlapsGarment && speed<=.08) add("iron_hold",previous.timestamp_sec,current.timestamp_sec,.62,`continuous interpolation between tracked iron observations; tool_on_garment=true; garment_track=true; tool_speed=${speed.toFixed(2)} px/sec; persistent near-stationary track.`,"auto_tracked");
+    else if (garmentContext && speed>.08) add("reposition",previous.timestamp_sec,current.timestamp_sec,Math.min(.72,.45+speed/20),`continuous tracked transition; garment_track=true; tool_on_garment=${overlapsGarment}; tool_speed=${speed.toFixed(2)} px/sec; stroke evidence not sustained.`,"auto_tracked");
   }
   const handsByTime = new Map<number,HandSample[]>(); input.hands.forEach((hand)=>handsByTime.set(hand.timestamp_sec,[...(handsByTime.get(hand.timestamp_sec)??[]),hand]));
   const pairedTimes=[...handsByTime.entries()].filter(([,items])=>items.length>=2).map(([time])=>time).sort((a,b)=>a-b);
