@@ -3,22 +3,25 @@
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { SiteHeader } from "../site-header";
 import { IRONING_EPISODES, readEpisodeField } from "../data/ironing-episodes";
+import { AutoAnalysis } from "./auto-analysis";
 import styles from "./annotate.module.css";
 import { RgbAnalysis } from "./rgb-analysis";
 
 const sampleEpisode = IRONING_EPISODES[0];
 
 const BEHAVIORS = [
-  ["initial_state", "Garment stationary before active manipulation."],
-  ["approach", "Hand or tool moves toward the target/workspace before interaction."],
-  ["position", "Garment is moved or aligned into a working configuration."],
-  ["tension", "Fabric is held, pulled or stabilized to create/control tension."],
-  ["iron_stroke", "Iron contacts fabric while translating across it."],
-  ["iron_hold", "Iron remains in contact with fabric with little or no translational movement."],
-  ["reposition", "Garment or tool configuration changes between active ironing interactions."],
-  ["inspect", "Operator checks the garment/result without active ironing."],
-  ["release", "Active contact/manipulation ends."],
-  ["terminal_state", "Garment remains stationary after manipulation is complete."],
+  ["initial_state", "Garment stationary before active manipulation.", false],
+  ["approach", "Hand or tool moves toward the target/workspace before interaction.", false],
+  ["position", "Garment is moved or aligned into a working configuration.", false],
+  ["tension", "Fabric is held, pulled or stabilized to create/control tension.", false],
+  ["iron_stroke", "Iron contacts fabric while translating across it.", false],
+  ["iron_hold", "Iron remains in contact with fabric with little or no translational movement.", false],
+  ["reposition", "Garment or tool configuration changes between active ironing interactions.", false],
+  ["inspect", "Operator checks the garment/result without active ironing.", false],
+  ["release", "Active contact/manipulation ends.", false],
+  ["terminal_state", "Garment remains stationary after manipulation is complete.", false],
+  ["anchor", "The non-ironing hand holds or stabilizes the fabric to resist movement during manipulation.", true],
+  ["slip", "A visible moment or interval where one fabric region/layer moves relative to another during interaction.", true],
 ] as const;
 
 const MODULES = [
@@ -456,7 +459,7 @@ export function TemporalWorkbench() {
   return <>
     <SiteHeader active="annotate" />
     <div className={styles.toolContext}>
-      <div><span>nAIve physics</span><strong>Free Annotation Tool</strong></div>
+      <div><span>nAIve physics</span><strong>Internal / Experimental Workbench</strong></div>
       <div><span>{activeModule}</span><strong>{activeModule === "Temporal" ? "v0.2.1" : "v0.3A"}</strong></div>
     </div>
     <nav className={styles.moduleNav} aria-label="Data Workbench modules">
@@ -514,7 +517,7 @@ export function TemporalWorkbench() {
       <div hidden={activeModule !== "Temporal"}>
         <section className={styles.timelineSection} aria-labelledby="timeline-title"><div className={styles.sectionHead}><div><p>03 / BEHAVIOR TRACK</p><h2 id="timeline-title">Timeline</h2></div><span>00:00 — {formatDuration(duration)}</span></div><div className={styles.temporalMetrics}><div><span>Temporal coverage</span><strong>{temporalQa.annotatedDuration.toFixed(3)} / {duration.toFixed(3)} sec</strong><b>{temporalQa.coveragePercentage.toFixed(1)}%</b></div><div><span>Unannotated</span><strong>{temporalQa.unannotatedDuration.toFixed(3)} sec</strong><b>{temporalQa.gaps.length} gaps</b></div><div><span>Overlap QA</span><strong>{temporalQa.overlaps.length}</strong><b>{temporalQa.overlaps.length ? "REVIEW REQUIRED" : "NONE DETECTED"}</b></div></div><div className={styles.timeline} aria-label="Temporal annotation timeline"><div className={styles.playhead} style={{ left: `${Math.min(100, currentTime / safeDuration * 100)}%` }}/>{temporalQa.gaps.map((gap,index)=><span className={`${styles.qaInterval} ${styles.gapInterval}`} key={`gap-${index}`} style={{left:`${gap.start/safeDuration*100}%`,width:`${gap.duration/safeDuration*100}%`}} title={`Gap ${gap.start.toFixed(3)}–${gap.end.toFixed(3)} sec`} />)}{temporalQa.overlaps.map((overlap,index)=><span className={`${styles.qaInterval} ${styles.overlapInterval}`} key={`overlap-${index}`} style={{left:`${overlap.start/safeDuration*100}%`,width:`${overlap.duration/safeDuration*100}%`}} title={`Overlap ${overlap.start.toFixed(3)}–${overlap.end.toFixed(3)} sec`} />)}{annotations.map((annotation) => <button aria-label={`Select ${annotation.annotation_id} ${annotation.label}`} className={`${styles.segment} ${selectedId === annotation.annotation_id ? styles.segmentSelected : ""}`} key={annotation.annotation_id} onClick={() => selectAnnotation(annotation)} style={{left:`${annotation.start_time_sec / safeDuration * 100}%`,width:`${annotation.duration_sec / safeDuration * 100}%`}} type="button"><span>{annotation.label}</span></button>)}</div><div className={styles.timelineTicks}>{ticks.map((tick, index) => <span key={index}>{tick.toFixed(tick < 10 ? 1 : 0)} s</span>)}</div>{temporalQa.gaps.length || temporalQa.overlaps.length ? <div className={styles.qaIssues}>{temporalQa.gaps.map((gap,index)=><span key={`gap-detail-${index}`}>GAP {gap.start.toFixed(3)}–{gap.end.toFixed(3)} · {gap.duration.toFixed(3)} sec</span>)}{temporalQa.overlaps.map((overlap,index)=><span key={`overlap-detail-${index}`}>OVERLAP {overlap.start.toFixed(3)}–{overlap.end.toFixed(3)} · {overlap.duration.toFixed(3)} sec</span>)}</div> : <p className={styles.qaClear}>No gaps or overlaps detected.</p>}</section>
 
-      <section className={styles.annotationBuilder} aria-labelledby="controls-title"><div className={styles.controlPanel}><div className={styles.sectionHead}><div><p>04 / HUMAN VERIFICATION</p><h2 id="controls-title">Annotation controls</h2></div></div><div className={styles.quickStarts}><button disabled={!source || annotations.length > 0} onClick={startEpisodeAtZero} type="button">Start episode at 0.000</button><button disabled={!source || annotations.length === 0} onClick={startAtPreviousEnd} type="button">Start at previous end</button></div><div className={styles.markButtons}><button disabled={!source} onClick={markStart} type="button">Mark start <kbd>[</kbd></button><button disabled={!source} onClick={markEnd} type="button">Mark end <kbd>]</kbd></button></div><label>Behavior<select onChange={(event) => { setBehavior(event.target.value as Behavior | ""); setValidation(""); }} value={behavior}><option value="">Choose behavior</option>{BEHAVIORS.map(([label,definition]) => <option key={label} title={definition} value={label}>{label}</option>)}</select></label><dl className={styles.proposedSegment}><div><dt>Start</dt><dd>{formatMark(startTime)}</dd></div><div><dt>End</dt><dd>{formatMark(endTime)}</dd></div><div><dt>Duration</dt><dd>{proposedDuration === null ? "—" : `${proposedDuration.toFixed(2)} s`}</dd></div></dl>{validation ? <p className={styles.validation} role="alert">{validation}</p> : null}<button className={styles.addButton} onClick={addSegment} type="button">Add segment</button></div><aside className={styles.ontology}><p>Controlled vocabulary</p>{BEHAVIORS.map(([label,definition]) => <details key={label}><summary>{label}</summary><span>{definition}</span></details>)}</aside></section>
+      <section className={styles.annotationBuilder} aria-labelledby="controls-title"><div className={styles.controlPanel}><div className={styles.sectionHead}><div><p>04 / HUMAN VERIFICATION</p><h2 id="controls-title">Annotation controls</h2></div></div><div className={styles.quickStarts}><button disabled={!source || annotations.length > 0} onClick={startEpisodeAtZero} type="button">Start episode at 0.000</button><button disabled={!source || annotations.length === 0} onClick={startAtPreviousEnd} type="button">Start at previous end</button></div><div className={styles.markButtons}><button disabled={!source} onClick={markStart} type="button">Mark start <kbd>[</kbd></button><button disabled={!source} onClick={markEnd} type="button">Mark end <kbd>]</kbd></button></div><label>Behavior<select onChange={(event) => { setBehavior(event.target.value as Behavior | ""); setValidation(""); }} value={behavior}><option value="">Choose behavior</option>{BEHAVIORS.map(([label,definition,experimental]) => <option key={label} title={definition} value={label}>{label}{experimental ? " — EXPERIMENTAL" : ""}</option>)}</select></label><p className={styles.experimentalNote}>Experimental interaction labels are being evaluated and are not part of the published v0.2 ontology.</p><dl className={styles.proposedSegment}><div><dt>Start</dt><dd>{formatMark(startTime)}</dd></div><div><dt>End</dt><dd>{formatMark(endTime)}</dd></div><div><dt>Duration</dt><dd>{proposedDuration === null ? "—" : `${proposedDuration.toFixed(2)} s`}</dd></div></dl>{validation ? <p className={styles.validation} role="alert">{validation}</p> : null}<button className={styles.addButton} onClick={addSegment} type="button">Add segment</button></div><aside className={styles.ontology}><p>Controlled vocabulary</p>{BEHAVIORS.map(([label,definition,experimental]) => <details key={label}><summary>{label}{experimental ? <b>Experimental</b> : null}</summary><span>{definition}</span></details>)}</aside></section>
 
       <section className={styles.records} aria-labelledby="records-title">
         <div className={styles.recordsHeader}><div><p>06 / SESSION RECORDS</p><h2 id="records-title">Annotation records</h2></div><div><span>{annotationsExported ? "Annotation CSV exported." : "Annotations are not saved until exported."}</span><div className={styles.recordActions}><button disabled={annotations.length === 0} onClick={exportCsv} type="button">Export annotation CSV</button>{annotationsExported ? <button className={styles.nextButton} onClick={resetForNextVideo} type="button">Annotate next video</button> : null}</div></div></div><div className={`${styles.exportQa} ${temporalQa.passed ? styles.qaPassed : styles.qaIncomplete}`}><strong>{temporalQa.passed ? "TEMPORAL QA PASSED" : "TEMPORAL QA INCOMPLETE"}</strong><span>Segments: {annotations.length}</span><span>Coverage: {temporalQa.coveragePercentage.toFixed(1)}%</span><span>Gaps: {temporalQa.gaps.length}</span><span>Overlaps: {temporalQa.overlaps.length}</span><span>Episode: {duration.toFixed(3)} sec</span>{exportNotice ? <b role="status">{exportNotice}</b> : null}</div>
@@ -525,6 +528,8 @@ export function TemporalWorkbench() {
       <div hidden={activeModule !== "RGB Analysis"}>
         <RgbAnalysis currentTime={currentTime} episodeId={metadata.episode_id} fps={fps} hasSource={Boolean(source)} key={source?.url ?? "no-source"} sourceKind={source?.kind ?? null} videoRef={videoRef} />
       </div>
+
+      <AutoAnalysis activeRegion={metadata.garment_region} currentTime={currentTime} dimensions={dimensions} duration={duration} episodeId={metadata.episode_id} fps={fps} key={`analysis-${source?.url ?? "none"}`} temporal={annotations.map((annotation) => ({ label: annotation.label, start_time_sec: annotation.start_time_sec, end_time_sec: annotation.end_time_sec, source_type: annotation.annotation_source }))} videoRef={videoRef} />
 
       <p className={styles.thermalNote}>Thermal analysis is not available from RGB video. It requires thermal / IR sensor data.</p>
     </main>
