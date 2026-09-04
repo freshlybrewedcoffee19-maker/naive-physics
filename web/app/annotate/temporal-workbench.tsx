@@ -4,6 +4,7 @@ import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { SiteHeader } from "../site-header";
 import { IRONING_EPISODES, readEpisodeField } from "../data/ironing-episodes";
 import { AutoAnalysis } from "./auto-analysis";
+import { TEMPORAL_TRACKS, type TemporalLabel } from "./temporal-candidates";
 import styles from "./annotate.module.css";
 import { RgbAnalysis } from "./rgb-analysis";
 
@@ -83,7 +84,7 @@ type Annotation = {
   start_frame: number | null;
   end_frame: number | null;
   duration_sec: number;
-  annotation_source: "human_annotated";
+  annotation_source: "human_annotated" | "human_verified";
 };
 type TemporalInterval = { start: number; end: number; duration: number };
 type TemporalQa = {
@@ -127,14 +128,21 @@ const analyzeTemporalTrack = (annotations: Annotation[], episodeDuration: number
     const start = Math.max(0, Math.min(episodeDuration, annotation.start_time_sec));
     const end = Math.max(start, Math.min(episodeDuration, annotation.end_time_sec));
     if (hasSegment && start > frontier + TEMPORAL_TOLERANCE_SECONDS) gaps.push({ start: frontier, end: start, duration: roundTime(start - frontier) });
-    if (hasSegment && start < frontier - TEMPORAL_TOLERANCE_SECONDS && end > start) {
-      const overlapEnd = Math.min(frontier, end);
-      overlaps.push({ start, end: overlapEnd, duration: roundTime(overlapEnd - start) });
-    }
     const uncoveredStart = Math.max(frontier, start);
     if (end > uncoveredStart) covered += end - uncoveredStart;
     frontier = Math.max(frontier, end);
     hasSegment = true;
+  }
+  for (const track of [...new Set(sorted.map((annotation) => TEMPORAL_TRACKS[annotation.label]))]) {
+    const trackAnnotations = sorted.filter((annotation) => TEMPORAL_TRACKS[annotation.label] === track);
+    let trackFrontier = -1;
+    for (const annotation of trackAnnotations) {
+      if (trackFrontier >= 0 && annotation.start_time_sec < trackFrontier - TEMPORAL_TOLERANCE_SECONDS) {
+        const overlapEnd = Math.min(trackFrontier, annotation.end_time_sec);
+        if (overlapEnd > annotation.start_time_sec) overlaps.push({ start: annotation.start_time_sec, end: overlapEnd, duration: roundTime(overlapEnd - annotation.start_time_sec) });
+      }
+      trackFrontier = Math.max(trackFrontier, annotation.end_time_sec);
+    }
   }
   const annotatedDuration = roundTime(Math.min(episodeDuration, covered));
   const rawUnannotated = Math.max(0, episodeDuration - annotatedDuration);
@@ -364,6 +372,16 @@ export function TemporalWorkbench() {
     setValidation("");
   };
 
+  const acceptTemporalCandidate = ({ label, start_time_sec, end_time_sec }: { label: TemporalLabel; start_time_sec: number; end_time_sec: number }) => {
+    if (!metadata.episode_id.trim() || end_time_sec <= start_time_sec) return false;
+    const annotation: Annotation = {
+      episode_id: metadata.episode_id.trim(), annotation_id: `ANN_${String(nextAnnotationNumber.current).padStart(3, "0")}`, label,
+      start_time_sec: roundTime(start_time_sec), end_time_sec: roundTime(end_time_sec), start_frame: frameFromTime(start_time_sec, fps), end_frame: frameFromTime(end_time_sec, fps),
+      duration_sec: roundTime(end_time_sec-start_time_sec), annotation_source: "human_verified",
+    };
+    nextAnnotationNumber.current += 1; setAnnotations((current)=>[...current,annotation]); setAnnotationsExported(false); setExportNotice(""); setSelectedId(annotation.annotation_id); return true;
+  };
+
   const selectAnnotation = (annotation: Annotation) => {
     setSelectedId(annotation.annotation_id);
     const video = videoRef.current;
@@ -529,7 +547,7 @@ export function TemporalWorkbench() {
         <RgbAnalysis currentTime={currentTime} episodeId={metadata.episode_id} fps={fps} hasSource={Boolean(source)} key={source?.url ?? "no-source"} sourceKind={source?.kind ?? null} videoRef={videoRef} />
       </div>
 
-      <AutoAnalysis activeRegion={metadata.garment_region} currentTime={currentTime} dimensions={dimensions} duration={duration} episodeId={metadata.episode_id} fps={fps} key={`analysis-${source?.url ?? "none"}`} temporal={annotations.map((annotation) => ({ label: annotation.label, start_time_sec: annotation.start_time_sec, end_time_sec: annotation.end_time_sec, source_type: annotation.annotation_source }))} videoRef={videoRef} />
+      <AutoAnalysis activeRegion={metadata.garment_region} currentTime={currentTime} dimensions={dimensions} duration={duration} episodeId={metadata.episode_id} fps={fps} key={`analysis-${source?.url ?? "none"}`} onAcceptTemporal={acceptTemporalCandidate} temporal={annotations.map((annotation) => ({ label: annotation.label, start_time_sec: annotation.start_time_sec, end_time_sec: annotation.end_time_sec, source_type: annotation.annotation_source }))} videoRef={videoRef} />
 
       <p className={styles.thermalNote}>Thermal analysis is not available from RGB video. It requires thermal / IR sensor data.</p>
     </main>
