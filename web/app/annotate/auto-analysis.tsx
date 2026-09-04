@@ -20,6 +20,7 @@ type HandRecord = { episode_id: string; frame_index: number; timestamp_sec: numb
 type ToolRecord = { episode_id: string; frame_index: number; timestamp_sec: number; x_px: number; y_px: number; width_px: number; height_px: number; center_x_px: number; center_y_px: number; source_type: "human_verified" | "auto_tracked"; tracking_status: "seed" | "tracked" | "review_required"; algorithm_version: string };
 type MaskState = { width: number; height: number; values: Float32Array; seedTime: number; seedX: number; seedY: number; source_type: "model_estimated" | "human_verified" };
 type MaskTrack = { frame_index: number; timestamp_sec: number; offset_x_px: number; offset_y_px: number; source_type: "model_estimated" | "auto_tracked"; tracking_status: "seed" | "tracked" | "review_required" };
+type InteractionContext = { revision: number; contextLevel: "UNANALYZED" | "FULL" | "LIMITED"; mask: MaskState | null; maskTracks: MaskTrack[]; toolSeed: ToolRecord | null; toolTracks: ToolRecord[]; toolOnGarmentTimes: number[] };
 
 const MODULES: ModuleName[] = ["Garment segmentation", "Semantic keypoints", "Hand pose", "Iron tracking", "Optical flow", "Slip candidates", "RGB analysis", "Depth estimate", "Estimated 3D"];
 const POINT_LABELS: PointLabel[] = ["left_shoulder", "right_shoulder", "left_sleeve_tip", "right_sleeve_tip", "left_hem", "right_hem", "garment_center", "anchor_point", "iron_contact_point"];
@@ -108,16 +109,18 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
   const [semantics, setSemantics] = useState<SemanticRecord[]>([]);
   const [hands, setHands] = useState<HandRecord[]>([]);
   const [poseSamples, setPoseSamples] = useState(0);
-  const [mask, setMask] = useState<MaskState | null>(null);
-  const [maskTracks, setMaskTracks] = useState<MaskTrack[]>([]);
-  const [toolSeed, setToolSeed] = useState<ToolRecord | null>(null);
-  const [toolTracks, setToolTracks] = useState<ToolRecord[]>([]);
+  const [interactionContext, setInteractionContextState] = useState<InteractionContext>({ revision:0,contextLevel:"UNANALYZED",mask:null,maskTracks:[],toolSeed:null,toolTracks:[],toolOnGarmentTimes:[] });
+  const interactionContextRef = useRef(interactionContext);
+  const commitInteractionContext = (next: InteractionContext) => { interactionContextRef.current=next; setInteractionContextState(next); };
+  const { mask,maskTracks,toolSeed,toolTracks } = interactionContext;
   const [slips, setSlips] = useState<SlipRecord[]>([]);
   const [rgbScores, setRgbScores] = useState<Array<{ frame: number; time: number; score: number }>>([]);
   const [videoExporting, setVideoExporting] = useState(false);
   const [analysisReady, setAnalysisReady] = useState(false);
   const [analysisAttempted, setAnalysisAttempted] = useState(false);
   const [temporalCandidates, setTemporalCandidates] = useState<TemporalCandidate[]>([]);
+  const [temporalContextRevision, setTemporalContextRevision] = useState<number | null>(null);
+  const [exportValidation, setExportValidation] = useState("");
   const [adjustingCandidate, setAdjustingCandidate] = useState<string | null>(null);
   const setStatus = (name: ModuleName, status: Status) => setStatuses((current) => ({ ...current, [name]: status }));
   const activeSlips = useMemo(() => slips.filter((item) => item.review_status !== "rejected"), [slips]);
@@ -157,7 +160,7 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
     setFrameImage(image); requestAnimationFrame(() => drawReviewFrame(image, semantics));
   };
   const addPoint = async (event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!frameImage || !episodeId || !fps) return;
+    if (!frameImage || !episodeId || !fps || running) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = Math.round((event.clientX - rect.left) / rect.width * dimensions.width), y = Math.round((event.clientY - rect.top) / rect.height * dimensions.height);
     if (interactionMode === "garment") {
@@ -166,7 +169,7 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
         const canvas = event.currentTarget;
         const generated = await segmentFromPoint(canvas, (event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
         const nextMask: MaskState = { ...generated, seedTime: currentTime, seedX: x, seedY: y, source_type: mask ? "human_verified" : "model_estimated" };
-        setMask(nextMask); setMaskTracks([]); setStatus("Garment segmentation", "complete");
+        commitInteractionContext({ ...interactionContextRef.current,revision:interactionContextRef.current.revision+1,contextLevel:"UNANALYZED",mask:nextMask,maskTracks:[],toolTracks:[],toolOnGarmentTimes:[] }); setStatus("Garment segmentation", "complete");
         const points = proposeGarmentPoints(nextMask, dimensions, episodeId, currentTime, fps);
         setSemantics((current) => [...current.filter((item) => !points.some((point) => point.frame_index === item.frame_index && point.semantic_label === item.semantic_label)), ...points]);
         setStatus("Semantic keypoints", points.length ? "partial" : "failed"); setNotice(`Genuine MediaPipe garment mask produced. ${points.length} geometry proposals require review.`);
@@ -176,7 +179,7 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
     if (interactionMode === "iron") {
       const width = Math.max(48, Math.round(dimensions.width * .16)), height = Math.max(40, Math.round(dimensions.height * .18));
       const seed: ToolRecord = { episode_id: episodeId, frame_index: Math.round(currentTime * fps), timestamp_sec: currentTime, x_px: Math.max(0, Math.round(x - width / 2)), y_px: Math.max(0, Math.round(y - height / 2)), width_px: width, height_px: height, center_x_px: x, center_y_px: y, source_type: "human_verified", tracking_status: "seed", algorithm_version: "initialized_block_tracker_v0_1" };
-      setToolSeed(seed); setToolTracks([]); setStatus("Iron tracking", "partial"); setNotice("Iron tracker initialized. Run Auto Analysis to propagate this visible region."); return;
+      commitInteractionContext({ ...interactionContextRef.current,revision:interactionContextRef.current.revision+1,contextLevel:"UNANALYZED",toolSeed:seed,toolTracks:[],toolOnGarmentTimes:[] }); setStatus("Iron tracking", "partial"); setNotice("Iron tracker initialized. Run Auto Analysis to propagate this visible region."); return;
     }
     const record: SemanticRecord = { episode_id: episodeId, frame_index: Math.round(currentTime * fps), timestamp_sec: currentTime, semantic_type: "keypoint", semantic_label: pointLabel, x_px: x, y_px: y, source_type: "human_verified", confidence: null, algorithm_version: "semantic_v0_1" };
     setSemantics((current) => [...current.filter((item) => !(item.frame_index === record.frame_index && item.semantic_label === pointLabel)), record]);
@@ -192,19 +195,22 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
   const runAnalysis = async () => {
     const video = videoRef.current;
     if (!video || !episodeId || !fps || !duration) { setNotice("Load a browser-readable episode with FPS before analysis."); return; }
+    const runContext=interactionContextRef.current;
+    const runMask=runContext.mask, runToolSeed=runContext.toolSeed;
     setRunning(true); setAnalysisReady(false); setAnalysisAttempted(true); setNotice(`${mode} analysis running. Temporal annotation remains independent.`);
+    setTemporalCandidates([]); setTemporalContextRevision(null); setExportValidation("");
     const originalTime = video.currentTime, wasPaused = video.paused;
     setStatus("Garment segmentation", "running"); setStatus("Semantic keypoints", "running"); setStatus("Hand pose", "running"); setStatus("Iron tracking", "running");
     setStatus("Optical flow", "running"); setStatus("Slip candidates", "running"); setStatus("RGB analysis", "running"); setStatus("Depth estimate", "running"); setStatus("Estimated 3D", "running");
     try {
-      setStatus("Garment segmentation", mask ? "partial" : "not_started");
+      setStatus("Garment segmentation", runMask ? "partial" : "not_started");
       setStatus("Semantic keypoints", semantics.length ? "partial" : "not_started");
       setStatus("Hand pose", "running");
-      setStatus("Iron tracking", toolSeed ? "running" : "not_started");
+      setStatus("Iron tracking", runToolSeed ? "running" : "not_started");
       setStatus("Depth estimate", "unavailable"); setStatus("Estimated 3D", "unavailable");
       const count = mode === "FAST" ? 5 : 12, interval = .2;
       const baseTimes = Array.from({ length: count }, (_, index) => Math.min(Math.max(0, duration - interval - .05), (index + 1) / (count + 1) * duration));
-      const postSeedTimes = toolSeed ? [toolSeed.timestamp_sec + interval,toolSeed.timestamp_sec + Math.max(1,duration/(count+1))].filter((time)=>time<duration-.05) : [];
+      const postSeedTimes = runToolSeed ? [runToolSeed.timestamp_sec + interval,runToolSeed.timestamp_sec + Math.max(1,duration/(count+1))].filter((time)=>time<duration-.05) : [];
       const times = [...new Set([...baseTimes,...postSeedTimes].map((time)=>roundTime(time)))].sort((a,b)=>a-b);
       const nextSlips: SlipRecord[] = [], nextRgb: Array<{ frame: number; time: number; score: number }> = [], nextHands: HandRecord[] = [], nextTools: ToolRecord[] = [], nextMaskTracks: MaskTrack[] = [];
       const handFailures: string[] = [];
@@ -227,14 +233,14 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
             handFailures.push(error instanceof Error ? error.message : String(error));
           }
           cumulativeX += flow.meanX / first.width * dimensions.width; cumulativeY += flow.meanY / first.height * dimensions.height;
-          if (mask) nextMaskTracks.push({ frame_index: Math.round(time * fps), timestamp_sec: time, offset_x_px: Math.round(cumulativeX), offset_y_px: Math.round(cumulativeY), source_type: Math.abs(time - mask.seedTime) < .001 ? "model_estimated" : "auto_tracked", tracking_status: flow.relative < 2.8 ? "tracked" : "review_required" });
-          if (toolSeed && time > toolSeed.timestamp_sec) {
-            const cx = toolSeed.center_x_px + cumulativeX, cy = toolSeed.center_y_px + cumulativeY;
+          if (runMask) nextMaskTracks.push({ frame_index: Math.round(time * fps), timestamp_sec: time, offset_x_px: Math.round(cumulativeX), offset_y_px: Math.round(cumulativeY), source_type: Math.abs(time - runMask.seedTime) < .001 ? "model_estimated" : "auto_tracked", tracking_status: flow.relative < 2.8 ? "tracked" : "review_required" });
+          if (runToolSeed && time > runToolSeed.timestamp_sec) {
+            const cx = runToolSeed.center_x_px + cumulativeX, cy = runToolSeed.center_y_px + cumulativeY;
             const inBounds = cx >= 0 && cx < dimensions.width && cy >= 0 && cy < dimensions.height;
-            nextTools.push({ ...toolSeed, frame_index: Math.round(time * fps), timestamp_sec: time, x_px: Math.round(cx - toolSeed.width_px / 2), y_px: Math.round(cy - toolSeed.height_px / 2), center_x_px: Math.round(cx), center_y_px: Math.round(cy), source_type: "auto_tracked", tracking_status: inBounds && flow.relative < 2.8 ? "tracked" : "review_required" });
+            nextTools.push({ ...runToolSeed, frame_index: Math.round(time * fps), timestamp_sec: time, x_px: Math.round(cx - runToolSeed.width_px / 2), y_px: Math.round(cy - runToolSeed.height_px / 2), center_x_px: Math.round(cx), center_y_px: Math.round(cy), source_type: "auto_tracked", tracking_status: inBounds && flow.relative < 2.8 ? "tracked" : "review_required" });
           }
           nextRgb.push({ frame: Math.round(time * fps), time, score: rgbResponse(first) });
-          const ironEvidence = Boolean(toolSeed), garmentEvidence = Boolean(mask);
+          const ironEvidence = Boolean(runToolSeed), garmentEvidence = Boolean(runMask);
           const interactionBoost = (handEvidence ? .08 : 0) + (ironEvidence ? .08 : 0) + (garmentEvidence ? .08 : 0);
           if (flow.relative >= 1.15) nextSlips.push({ episode_id: episodeId, start_frame: Math.round(time * fps), end_frame: Math.round((time + interval) * fps), start_time_sec: time, end_time_sec: time + interval, event_label: "slip_candidate", candidate_score: Math.min(1, score + interactionBoost), review_status: "candidate", source_type: "auto_tracked", algorithm_version: "slip_candidate_interaction_evidence_v0_2", evidence: `Garment-mask=${garmentEvidence}; hand=${handEvidence}; iron-track=${ironEvidence}; local relative motion=${flow.relative.toFixed(3)} px; global translation=${flow.global.toFixed(3)} px; ${flow.vectorCount} blocks. Human verification required.` });
         } catch { /* independent sample failure */ }
@@ -243,20 +249,22 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
       nextHands.forEach((hand) => {
         if (temporal.some((item) => item.label === "anchor" && hand.timestamp_sec >= item.start_time_sec && hand.timestamp_sec <= item.end_time_sec)) interactionPoints.push({ episode_id: episodeId, frame_index: hand.frame_index, timestamp_sec: hand.timestamp_sec, semantic_type: "keypoint", semantic_label: "anchor_point", x_px: Math.round(hand.center_x_px), y_px: Math.round(hand.center_y_px), source_type: "model_estimated", confidence: null, algorithm_version: "hand_center_anchor_candidate_v0_1" });
       });
-      if (mask) nextTools.forEach((tool) => {
-        const mx = Math.max(0, Math.min(mask.width - 1, Math.floor(tool.center_x_px / dimensions.width * mask.width)));
-        const my = Math.max(0, Math.min(mask.height - 1, Math.floor(tool.center_y_px / dimensions.height * mask.height)));
-        if (mask.values[my * mask.width + mx] > .5) interactionPoints.push({ episode_id: episodeId, frame_index: tool.frame_index, timestamp_sec: tool.timestamp_sec, semantic_type: "keypoint", semantic_label: "iron_contact_point", x_px: tool.center_x_px, y_px: tool.center_y_px, source_type: "auto_tracked", confidence: null, algorithm_version: "mask_overlap_contact_candidate_v0_1" });
+      if (runMask) nextTools.forEach((tool) => {
+        const mx = Math.max(0, Math.min(runMask.width - 1, Math.floor(tool.center_x_px / dimensions.width * runMask.width)));
+        const my = Math.max(0, Math.min(runMask.height - 1, Math.floor(tool.center_y_px / dimensions.height * runMask.height)));
+        if (runMask.values[my * runMask.width + mx] > .5) interactionPoints.push({ episode_id: episodeId, frame_index: tool.frame_index, timestamp_sec: tool.timestamp_sec, semantic_type: "keypoint", semantic_label: "iron_contact_point", x_px: tool.center_x_px, y_px: tool.center_y_px, source_type: "auto_tracked", confidence: null, algorithm_version: "mask_overlap_contact_candidate_v0_1" });
       });
       if (interactionPoints.length) setSemantics((current) => [...current.filter((item) => !interactionPoints.some((point) => point.frame_index === item.frame_index && point.semantic_label === item.semantic_label)), ...interactionPoints]);
-      setRgbScores(nextRgb); setSlips(nextSlips); setHands(nextHands); setPoseSamples(nextPoseSamples); setToolTracks(nextTools); setMaskTracks(nextMaskTracks);
+      const toolOnGarmentTimes=interactionPoints.filter((item)=>item.semantic_label==="iron_contact_point").map((item)=>item.timestamp_sec);
+      const contextLevel=nextMaskTracks.length>0&&nextTools.length>0?"FULL":"LIMITED";
+      setRgbScores(nextRgb); setSlips(nextSlips); setHands(nextHands); setPoseSamples(nextPoseSamples); commitInteractionContext({ ...runContext,revision:runContext.revision+1,contextLevel,maskTracks:nextMaskTracks,toolTracks:nextTools,toolOnGarmentTimes });
       setStatus("Hand pose", handFailures.length ? (nextHands.length ? "partial" : "failed") : "complete");
-      setStatus("Iron tracking", toolSeed ? (!nextTools.length ? "failed" : nextTools.some((item) => item.tracking_status === "review_required") ? "partial" : "complete") : "not_started");
-      if (mask) setStatus("Garment segmentation", nextMaskTracks.length ? (nextMaskTracks.some((item)=>item.tracking_status==="review_required") ? "partial" : "complete") : "failed");
+      setStatus("Iron tracking", runToolSeed ? (!nextTools.length ? "failed" : nextTools.some((item) => item.tracking_status === "review_required") ? "partial" : "complete") : "not_started");
+      if (runMask) setStatus("Garment segmentation", nextMaskTracks.length ? (nextMaskTracks.some((item)=>item.tracking_status==="review_required") ? "partial" : "complete") : "failed");
       setStatus("Optical flow", nextRgb.length === times.length ? "complete" : nextRgb.length ? "partial" : "failed");
       setStatus("RGB analysis", nextRgb.length ? "complete" : "failed");
       setStatus("Slip candidates", nextRgb.length ? "complete" : "failed");
-      const propagationFailures=[mask&&!nextMaskTracks.length?"Garment seed exists, but tracking did not propagate.":null,toolSeed&&!nextTools.length?"Iron seed exists, but tracking did not propagate.":null].filter(Boolean).join(" ");
+      const propagationFailures=[runMask&&!nextMaskTracks.length?"Garment seed exists, but tracking did not propagate.":null,runToolSeed&&!nextTools.length?"Iron seed exists, but tracking did not propagate.":null].filter(Boolean).join(" ");
       setNotice(`Analysis complete: ${nextRgb.length} sampled frames, ${nextHands.length} hand detections, ${nextTools.length} tool positions, ${nextSlips.length} slip candidates.${propagationFailures?` ${propagationFailures}`:""}${handFailures.length ? ` Hand Pose ${nextHands.length ? "partially failed" : "failed"}: ${handFailures[0]}` : ""} No candidate is ground truth.`);
       setAnalysisReady(nextRgb.length > 0);
     } finally {
@@ -268,9 +276,11 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
   const reviewSlip = (index: number, review_status: "accepted" | "rejected") => setSlips((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, review_status, event_label: review_status === "accepted" ? "slip" : "slip_candidate", source_type: review_status === "accepted" ? "human_verified" : item.source_type } : item));
   const generateCandidates = () => {
     if (!analysisReady || !fps) return;
-    const generated = generateTemporalCandidates({ episodeId, duration, fps, hands, tools: toolTracks, toolOnGarmentTimes:semantics.filter((item)=>item.semantic_label==="iron_contact_point").map((item)=>item.timestamp_sec), garmentTrackTimes:maskTracks.filter((item)=>item.tracking_status==="tracked").map((item)=>item.timestamp_sec), slips: slips.filter((item)=>item.review_status!=="rejected"), rgb: rgbScores, garmentMaskAvailable:Boolean(mask) });
-    const contextNote=missingTemporalContext.length?` Limited context: missing ${missingTemporalContext.join(" and ")}.`:" Garment mask and iron tracking were used.";
-    setTemporalCandidates(generated); setAdjustingCandidate(null); setNotice(`${generated.length} temporal candidates generated for review.${contextNote} No annotation was accepted automatically.`);
+    const context=interactionContextRef.current;
+    const missing=[!context.mask||!context.maskTracks.length?"garment mask tracking":null,!context.toolSeed||!context.toolTracks.length?"iron tracking":null].filter(Boolean) as string[];
+    const generated = generateTemporalCandidates({ episodeId, duration, fps, hands, tools: context.toolTracks, toolOnGarmentTimes:context.toolOnGarmentTimes, garmentTrackTimes:context.maskTracks.filter((item)=>item.tracking_status==="tracked").map((item)=>item.timestamp_sec), slips: slips.filter((item)=>item.review_status!=="rejected"), rgb: rgbScores, garmentMaskAvailable:Boolean(context.mask&&context.maskTracks.length) });
+    const contextNote=missing.length?` Limited context: missing ${missing.join(" and ")}.`:" Garment mask and iron tracking were used.";
+    setTemporalCandidates(generated); setTemporalContextRevision(context.revision); setExportValidation(""); setAdjustingCandidate(null); setNotice(`${generated.length} temporal candidates generated for review.${contextNote} No annotation was accepted automatically.`);
   };
   const updateCandidate = (id: string, patch: Partial<TemporalCandidate>) => setTemporalCandidates((current)=>current.map((item)=>item.candidate_id===id ? { ...item,...patch } : item));
   const acceptCandidate = (id: string) => {
@@ -291,18 +301,22 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
   const jumpTo = (time: number) => { const video = videoRef.current; if (video) video.currentTime = time; };
   const semanticCsv = () => makeCsv(SEMANTIC_COLUMNS, semantics.map((item) => [item.episode_id,item.frame_index,item.timestamp_sec.toFixed(3),item.semantic_type,item.semantic_label,item.x_px,item.y_px,item.source_type,item.confidence,item.algorithm_version]));
   const handCsv = () => makeCsv(HAND_COLUMNS, hands.map((item) => [item.episode_id,item.frame_index,item.timestamp_sec.toFixed(3),item.hand_index,item.handedness,item.center_x_px.toFixed(2),item.center_y_px.toFixed(2),item.landmarks_json,item.source_type,item.algorithm_version]));
-  const toolCsv = () => makeCsv(TOOL_COLUMNS, [...(toolSeed ? [toolSeed] : []), ...toolTracks].map((item) => [item.episode_id,item.frame_index,item.timestamp_sec.toFixed(3),item.x_px,item.y_px,item.width_px,item.height_px,item.center_x_px,item.center_y_px,item.source_type,item.tracking_status,item.algorithm_version]));
+  const toolCsv = (context=interactionContextRef.current) => makeCsv(TOOL_COLUMNS, [...(context.toolSeed ? [context.toolSeed] : []), ...context.toolTracks].map((item) => [item.episode_id,item.frame_index,item.timestamp_sec.toFixed(3),item.x_px,item.y_px,item.width_px,item.height_px,item.center_x_px,item.center_y_px,item.source_type,item.tracking_status,item.algorithm_version]));
   const slipCsv = () => makeCsv(SLIP_COLUMNS, slips.map((item) => [item.episode_id,item.start_frame,item.end_frame,item.start_time_sec.toFixed(3),item.end_time_sec.toFixed(3),item.event_label,item.candidate_score.toFixed(6),item.review_status,item.source_type,item.algorithm_version]));
   const temporalCandidateCsv = () => makeCsv(TEMPORAL_CANDIDATE_COLUMNS,temporalCandidates.map((item)=>[item.episode_id,item.candidate_id,item.track,item.proposed_label,item.start_frame,item.end_frame,item.start_time_sec.toFixed(3),item.end_time_sec.toFixed(3),item.duration_sec.toFixed(3),item.candidate_score===null?null:item.candidate_score.toFixed(3),item.evidence,item.review_status,item.source_type,item.algorithm_version]));
-  const provenanceJson = () => JSON.stringify({ episode_id: episodeId, workbench: "internal_experimental", generated_at: new Date().toISOString(), dependency: { name: "@mediapipe/tasks-vision", version: MEDIAPIPE_VERSION, license: "Apache-2.0" }, remote_models: MEDIAPIPE_MODELS, algorithms: { semantic: "mask_geometry_proposal_v0_1", motion: "block_flow_v0_1", hand: "mediapipe_hand_landmarker_v1", pose_support: "mediapipe_pose_landmarker_lite_v1", garment_mask: "mediapipe_magic_touch_v1", mask_propagation: "block_flow_translation_v0_1", iron: "initialized_block_tracker_v0_1", slip: "slip_candidate_interaction_evidence_v0_2", rgb: "rgb_sampled_response_v0_1" }, outputs: { hand_records: hands.length, pose_support_samples: poseSamples, mask_seeded: Boolean(mask), mask_track_records: maskTracks.length, tool_track_records: toolTracks.length }, source_types: ["human_annotated","human_verified","model_estimated","auto_tracked","derived_from_rgb"], limitations: ["RGB only","model and tracked output are not ground truth","block-flow is image motion, not calibrated physical velocity","mask propagation and iron tracking are approximate","slip candidates require human review","no sensor depth","no force or tactile sensing"] }, null, 2);
+  const provenanceJson = (context=interactionContextRef.current) => JSON.stringify({ episode_id: episodeId, workbench: "internal_experimental", generated_at: new Date().toISOString(), dependency: { name: "@mediapipe/tasks-vision", version: MEDIAPIPE_VERSION, license: "Apache-2.0" }, remote_models: MEDIAPIPE_MODELS, algorithms: { semantic: "mask_geometry_proposal_v0_1", motion: "block_flow_v0_1", hand: "mediapipe_hand_landmarker_v1", pose_support: "mediapipe_pose_landmarker_lite_v1", garment_mask: "mediapipe_magic_touch_v1", mask_propagation: "block_flow_translation_v0_1", iron: "initialized_block_tracker_v0_1", slip: "slip_candidate_interaction_evidence_v0_2", rgb: "rgb_sampled_response_v0_1" }, outputs: { hand_records: hands.length, pose_support_samples: poseSamples, mask_seeded: Boolean(context.mask), mask_track_records: context.maskTracks.length, tool_track_records: context.toolTracks.length }, source_types: ["human_annotated","human_verified","model_estimated","auto_tracked","derived_from_rgb"], limitations: ["RGB only","model and tracked output are not ground truth","block-flow is image motion, not calibrated physical velocity","mask propagation and iron tracking are approximate","slip candidates require human review","no sensor depth","no force or tactile sensing"] }, null, 2);
   const exportPackage = async () => {
+    const context=interactionContextRef.current;
+    if (context.contextLevel==="FULL"&&(context.maskTracks.length===0||context.toolTracks.length===0)) { setExportValidation("Export blocked: FULL interaction context does not match the tracking records."); return; }
+    if (temporalCandidates.length&&temporalContextRevision!==context.revision) { setExportValidation("Export blocked: temporal candidates were generated from an older interaction-context snapshot. Generate them again before export."); return; }
+    setExportValidation("");
     const files: Array<{ name: string; content: string }> = [];
     if (semantics.length) files.push({ name: `${episodeId}/semantics.csv`, content: semanticCsv() });
     if (hands.length) files.push({ name: `${episodeId}/hands.csv`, content: handCsv() });
-    if (toolSeed || toolTracks.length) files.push({ name: `${episodeId}/tool_track.csv`, content: toolCsv() });
+    if (context.toolSeed || context.toolTracks.length) files.push({ name: `${episodeId}/tool_track.csv`, content: toolCsv(context) });
     if (slips.length) files.push({ name: `${episodeId}/slip.csv`, content: slipCsv() });
     if (temporalCandidates.length) files.push({ name: `${episodeId}/temporal_candidates.csv`, content: temporalCandidateCsv() });
-    files.push({ name: `${episodeId}/provenance.json`, content: provenanceJson() });
+    files.push({ name: `${episodeId}/provenance.json`, content: provenanceJson(context) });
     const tar = await makeTar(files); downloadBlob(`${episodeId}_experimental_analysis.tar`, tar);
   };
   const exportVideo = async () => {
@@ -329,6 +343,8 @@ export function AutoAnalysis({ videoRef, episodeId, fps, currentTime, duration, 
     </section>
     <div className={styles.analysisColumns}><section><div className={styles.analysisSubhead}><div><p>SEMANTIC + TRACKING SEED</p><h3>Source-pixel inspection</h3></div><button disabled={!episodeId} onClick={captureReviewFrame} type="button">Capture current frame</button></div><p className={styles.analysisHelp}>Capture a frame, choose an interaction, then click. MediaPipe loads only when analysis or garment segmentation is requested.</p><label className={styles.semanticSelect}>Interaction<select onChange={(event) => setInteractionMode(event.target.value as InteractionMode)} value={interactionMode}><option value="landmark">Place landmark</option><option value="garment">Seed / reseed garment mask</option><option value="iron">Initialize / reinitialize iron</option></select></label>{interactionMode === "landmark" && <label className={styles.semanticSelect}>Landmark<select onChange={(event) => setPointLabel(event.target.value as PointLabel)} value={pointLabel}>{POINT_LABELS.map((label) => <option key={label}>{label}</option>)}</select></label>}<canvas aria-label="Semantic landmark and tracking seed frame" className={styles.semanticCanvas} hidden={!frameImage} onClick={addPoint} ref={canvasRef} /><div className={styles.semanticActions}><button disabled={!activeRegion || !episodeId} onClick={addRegion} type="button">Record active region</button><button disabled={!semantics.length} onClick={() => setSemantics([])} type="button">Clear semantic records</button></div><p className={styles.analysisHelp}>Mask: {mask ? `${mask.width}×${mask.height}, ${mask.source_type}` : "not seeded"}. Hands: {hands.length} detections. Pose-support samples: {poseSamples}. Tool: {toolTracks.length} tracked positions. Model proposals and tracked outputs remain reviewable estimates.</p></section>
       <section><div className={styles.analysisSubhead}><div><p>CONSOLIDATED REVIEW</p><h3>Review required</h3></div><strong>{slips.filter((item) => item.review_status === "candidate").length + maskTracks.filter((item) => item.tracking_status === "review_required").length + toolTracks.filter((item) => item.tracking_status === "review_required").length}</strong></div>{slips.length ? <ol className={styles.reviewQueue}>{slips.map((item,index) => <li key={`${item.start_frame}-${index}`}><div><strong>{item.event_label}</strong><span>{item.start_time_sec.toFixed(3)}–{item.end_time_sec.toFixed(3)} sec · frames {item.start_frame}–{item.end_frame}</span><small>{item.evidence}</small></div><div><button onClick={() => jumpTo(item.start_time_sec)} type="button">Jump</button><button disabled={item.review_status !== "candidate"} onClick={() => reviewSlip(index,"accepted")} type="button">Accept</button><button disabled={item.review_status !== "candidate"} onClick={() => reviewSlip(index,"rejected")} type="button">Reject</button></div></li>)}</ol> : <p className={styles.reviewEmpty}>No automatic review items yet. Run analysis to generate interpretable candidates.</p>}<div className={styles.analysisSummary}><span>RGB samples <b>{rgbScores.length}</b></span><span>Mask tracks <b>{maskTracks.length}</b></span><span>Slip candidates <b>{slips.length}</b></span><span>Accepted slip <b>{activeSlips.filter((item) => item.event_label === "slip").length}</b></span></div></section></div>
+    <div className={temporalStyles.preExportContext}><div><strong>INTERACTION CONTEXT</strong><span>Authoritative analysis revision {interactionContext.revision}</span></div><div><span>Garment mask records</span><b>{maskTracks.length}</b></div><div><span>Iron auto-track records</span><b>{toolTracks.length}</b></div><div><span>Temporal context</span><b>{interactionContext.contextLevel}</b></div></div>
+    {exportValidation?<p className={temporalStyles.exportError} role="alert">{exportValidation}</p>:null}
     <div className={styles.exportDeck}><div><p>EXPERIMENTAL OUTPUTS</p><h3>Export only what exists</h3><span>Canonical temporal CSV remains nine columns and excludes unaccepted candidates.</span></div><button disabled={!temporalCandidates.length} onClick={() => downloadBlob(`${episodeId}_temporal_candidates.csv`,new Blob([temporalCandidateCsv()],{type:"text/csv"}))} type="button">Export temporal candidates CSV</button><button disabled={!semantics.length} onClick={() => downloadBlob(`${episodeId}_semantics.csv`, new Blob([semanticCsv()], { type: "text/csv" }))} type="button">Export semantic CSV</button><button disabled={!hands.length} onClick={() => downloadBlob(`${episodeId}_hands.csv`, new Blob([handCsv()], { type: "text/csv" }))} type="button">Export hand-pose CSV</button><button disabled={!toolSeed && !toolTracks.length} onClick={() => downloadBlob(`${episodeId}_tool_track.csv`, new Blob([toolCsv()], { type: "text/csv" }))} type="button">Export tool-track CSV</button><button disabled={!slips.length} onClick={() => downloadBlob(`${episodeId}_slip.csv`, new Blob([slipCsv()], { type: "text/csv" }))} type="button">Export slip CSV</button><button disabled title="Depth is unavailable in this deployment." type="button">Export depth metadata</button><button disabled={!episodeId} onClick={() => downloadBlob(`${episodeId}_provenance.json`, new Blob([provenanceJson()], { type: "application/json" }))} type="button">Export provenance</button><button disabled={!episodeId || videoExporting} onClick={exportVideo} type="button">{videoExporting ? "Rendering video" : "Export analysis video"}</button><button disabled={!episodeId} onClick={exportPackage} type="button">Export episode package</button></div>
     <p className={styles.analysisHelp}>MediaPipe Tasks Vision {MEDIAPIPE_VERSION}; Hand Landmarker, Pose Landmarker, and Interactive Segmenter models load remotely from Google-hosted assets. Model URLs are recorded in provenance: {Object.keys(MEDIAPIPE_MODELS).join(", ")}.</p>
     <div className={styles.scienceCaveat}><strong>Scientific status</strong><span>Optical flow is image motion, not calibrated physical velocity.</span><span>Slip candidates are not verified slip until accepted by a human.</span><span>RGB response is experimental: not ground truth, physical wrinkle height, or measured geometry.</span><span>Depth not available in current deployment. Estimated 3D unavailable without depth.</span></div>
